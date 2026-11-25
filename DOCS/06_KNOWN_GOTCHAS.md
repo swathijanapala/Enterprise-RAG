@@ -33,3 +33,64 @@ ceiling — it does not do token-aware splitting and does not add overlap
 between chunks. This is intentional for this stage: it's simple, fast, and
 good enough for the document types in `DATA/true_data/`. Keep it in mind if
 you swap in documents with very long, unbroken paragraphs.
+
+---
+
+## 3. Logfire Initialization Order (The "Poisoning" Bug)
+
+**The Issue:**
+If any module calls `logfire.info()`/`logfire.span()` *before*
+`logfire.configure()` has run, Logfire's internal state becomes "poisoned"
+for that process — it silently enters a no-op mode and discards all
+subsequent traces, even if you call `.configure()` later. Importing
+`app.config.settings` (or anything that transitively imports it) at the top
+of `app/main.py` risks pulling in a module with a module-level Logfire call
+before configuration happens.
+
+**The Solution:**
+`app/main.py` bypasses `app.config` entirely at the very top of the file —
+it loads `.env` and calls `logfire.configure(token=os.getenv("LOGFIRE_TOKEN"))`
+using raw `os.getenv()`, before importing anything else from `app`.
+
+```python
+# app/main.py
+import logfire
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+logfire.configure(token=os.getenv("LOGFIRE_TOKEN"))
+
+# Safe to import the rest of the application now!
+from app.agents.graph import rag_agent
+```
+
+## 4. Conversation Memory Requires a Stable `thread_id`
+
+**The Issue:**
+`app/agents/graph.py` now compiles the `StateGraph` with a `MemorySaver`
+checkpointer, and `/query` passes `config={"configurable": {"thread_id": ...}}`
+on every call. `MemorySaver` keys its history purely by `thread_id` — if the
+client generates a new one per request (or doesn't send one at all, falling
+back to the `"default_user"` default on every caller), every call looks like
+a brand-new conversation even though the checkpointer is working correctly.
+
+**The Solution:**
+The Streamlit UI (`ui/app.py`) generates one `thread_id` per browser session
+(via `uuid.uuid4()`) and reuses it for every message in that session — it's
+the caller's job to keep sending the same `thread_id`, not the graph's.
+
+---
+
+## 5. Reranking Has a Graceful Fallback
+
+**The Issue:**
+`app/services/retrieval/ranking_service.py` lazily loads a FlashRank
+`Ranker` on first use. If model loading fails for any reason (e.g. no disk
+space for the ONNX model cache), the whole `/query` request would otherwise
+fail even though the Qdrant search itself succeeded.
+
+**The Solution:**
+`rerank_documents()` catches that failure and falls back to returning
+`documents[:top_n]` in their original Qdrant-ranked order — reranking
+degrades gracefully instead of taking down the whole pipeline.

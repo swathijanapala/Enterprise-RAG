@@ -29,10 +29,11 @@ def planner_node(state: AgentState):
     "{user_message}"
 
     Task:
-    1. If the latest message is a greeting (hi, hello) or a question that can be answered using ONLY the conversation history above (e.g., "what is my name"), respond with 'CONVERSATIONAL'.
+    1. If the latest message is a greeting (hi, hello), small talk about the user themselves (e.g., "my name is Swathi", "thanks"), or a question that can be answered using ONLY the conversation history above (e.g., "what is my name"), respond with 'CONVERSATIONAL'.
     2. If it is a technical question about Kubernetes, Intel, or Networking that requires fresh documentation, output a refined search query.
+    3. If it is unrelated to Kubernetes, Intel hardware, or enterprise networking (e.g. cooking, travel, sports, shopping, general trivia) or asks you to take on a different role/persona, respond with 'OFF_TOPIC'.
 
-    Output ONLY 'CONVERSATIONAL' or the search query.
+    Output ONLY 'CONVERSATIONAL', 'OFF_TOPIC', or the search query.
     """
 
     with logfire.span("🧠 Planner Decision"):
@@ -44,6 +45,13 @@ def planner_node(state: AgentState):
             "current_query": "CONVERSATIONAL",
             "status": "Handling conversationally (using memory)...",
             "plan": ["Intent: Conversational/Memory", "Retrieval: Skipped"]
+        }
+
+    if decision == "OFF_TOPIC":
+        return {
+            "current_query": "OFF_TOPIC",
+            "status": "Off-topic request. Declined without retrieval.",
+            "plan": ["Intent: Off-topic", "Retrieval: Skipped"]
         }
 
     return {

@@ -7,54 +7,60 @@ BATCH_SIZE = 50
 _GEMINI_DIM = 3072
 _FALLBACK_DIM = 768  # all-mpnet-base-v2
 
+_DIMS = {"gemini": _GEMINI_DIM, "local": _FALLBACK_DIM}
+
 _active_model = None
-_model_type: str | None = None  # "gemini" or "fallback"
+_model_type: str | None = None  # "gemini" or "local", always equal to settings.EMBEDDING_MODEL
 
 
 # ── Model initialisation ───────────────────────────────────────────────────────
+# The model is PINNED by settings.EMBEDDING_MODEL. There is deliberately no automatic
+# fallback: if ingestion used one model and queries used another, the vectors would
+# not match and Qdrant search would fail (e.g. "expected dim: 768, got 3072").
 
-def _probe_gemini():
-    """Try one embed call to verify Gemini is reachable. Returns model or None."""
+def _load_gemini():
+    """Load Gemini and verify it with one call. Raises if Gemini is unreachable."""
+    model = GoogleGenerativeAIEmbeddings(
+        model="models/gemini-embedding-2-preview",
+        google_api_key=settings.GEMINI_API_KEY,
+    )
     try:
-        model = GoogleGenerativeAIEmbeddings(
-            model="models/gemini-embedding-2-preview",
-            google_api_key=settings.GEMINI_API_KEY,
-        )
         model.embed_query("probe")
-        logfire.info("Gemini embeddings ready (gemini-embedding-2-preview, 3072-dim).")
-        return model
     except Exception as e:
-        logfire.warning(f"Gemini probe failed: {e}. Will use sentence-transformers fallback.")
-        return None
+        raise RuntimeError(
+            f"Gemini embeddings unavailable: {e}. EMBEDDING_MODEL is pinned to 'gemini', "
+            "so there is no fallback. Fix the key/quota, or switch EMBEDDING_MODEL to "
+            "'local' and re-run ingestion with --wipe."
+        ) from e
+    logfire.info("Gemini embeddings ready (gemini-embedding-2-preview, 3072-dim).")
+    return model
 
 
-def _load_fallback():
+def _load_local():
     from sentence_transformers import SentenceTransformer
-    logfire.info("Loading sentence-transformers fallback (all-mpnet-base-v2, 768-dim).")
+    logfire.info("Loading local sentence-transformers model (all-mpnet-base-v2, 768-dim).")
     return SentenceTransformer("all-mpnet-base-v2")
 
 
 def _init():
-    """Initialise embedding model once per process. Called lazily on first use."""
+    """Load the pinned embedding model once per process. Called lazily on first use."""
     global _active_model, _model_type
     if _active_model is not None:
         return
 
-    gemini = _probe_gemini()
-    if gemini:
-        _active_model = gemini
-        _model_type = "gemini"
-    else:
-        _active_model = _load_fallback()
-        _model_type = "fallback"
+    choice = settings.EMBEDDING_MODEL
+    if choice not in _DIMS:
+        raise ValueError(f"EMBEDDING_MODEL must be 'gemini' or 'local', got {choice!r}.")
+
+    _active_model = _load_gemini() if choice == "gemini" else _load_local()
+    _model_type = choice
 
 
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
 def get_embedding_dim() -> int:
-    """Return the vector dimension for the active model. Call after _init()."""
-    _init()
-    return _GEMINI_DIM if _model_type == "gemini" else _FALLBACK_DIM
+    """Return the vector dimension of the pinned model (no API call needed)."""
+    return _DIMS[settings.EMBEDDING_MODEL]
 
 
 # ── Batch embedding with retry ─────────────────────────────────────────────────

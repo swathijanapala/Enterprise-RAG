@@ -22,6 +22,8 @@ def route_planner(state: AgentState):
     """
     if state["current_query"] == "CONVERSATIONAL":
         return "small_talk"
+    if state["current_query"] == "OFF_TOPIC":
+        return "off_topic"
     return "technical"
 
 workflow.set_entry_point("planner")
@@ -33,7 +35,8 @@ workflow.add_conditional_edges(
     route_planner,
     {
         "technical": "retriever",
-        "small_talk": "responder"
+        "small_talk": "responder",
+        "off_topic": "responder"   # skip retrieval; responder returns a fixed refusal
     }
 )
 
